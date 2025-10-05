@@ -24,7 +24,7 @@ int num_registered_clients = 0;
 
 int handle_registration(int client_socket, const char *username) {
     // Check if the username is already in use
-    for (int i = 0; i < MAX_CLIENTS; i++) {
+    for (int i = 0; i < MAX_CLIENTS; ++i) {
         if (strcmp(registered_clients[i].username, username) == 0) {
             // User is already registered, reject the registration
             char rejection_msg[] = "Username is already taken. Please choose a different one.\n";
@@ -42,6 +42,11 @@ int handle_registration(int client_socket, const char *username) {
 
     // Notify the client of successful registration
     char success_msg[] = "Registration successful. Welcome to the chat server!\n";
+    char success_msg_server[USERNAME_MAX_LENGTH + 20];
+
+    sprintf(success_msg_server, "Client registered: %s\n", new_client.username);
+    printf("%s", success_msg_server);
+
     send(client_socket, success_msg, strlen(success_msg), 0);
     return 1;
 }
@@ -79,7 +84,7 @@ void initialize_server() {
     printf("Server listening on port %d\n", PORT);
 
     // Initialize client socket array
-    for (int i = 0; i < MAX_CLIENTS; i++) {
+    for (int i = 0; i < MAX_CLIENTS; ++i) {
         client_sockets[i] = 0;
     }
 }
@@ -103,9 +108,18 @@ int accept_new_connection(fd_set *read_fds) {
     int valread = recv(client_sd, buffer, BUFFER_SIZE, 0);
 
     if (valread > 0) {
+        // When using netcat client, the '\n' character gets added on enter
+        // in the username when sending username over to the server
+        for (int i = 0; i < valread; i++) {
+            if (buffer[i] == '\n') {
+                buffer[i] = '\0'; // Replace newline with null terminator
+                break; // Stop after the first newline is found
+            }
+        }
+
         if (handle_registration(client_sd, buffer)) {
             // Add the new socket to the client's socket array
-            for (int i = 0; i < MAX_CLIENTS; i++) {
+            for (int i = 0; i < MAX_CLIENTS; ++i) {
                 if (client_sockets[i] == 0) {
                     client_sockets[i] = client_sd;
                     FD_SET(client_sd, read_fds);
@@ -125,7 +139,7 @@ int accept_new_connection(fd_set *read_fds) {
 void handle_client_activity(fd_set *read_fds, fd_set *temp_fds) {
     char buffer[BUFFER_SIZE];
 
-    for (int i = 0; i < MAX_CLIENTS; i++) {
+    for (int i = 0; i < MAX_CLIENTS; ++i) {
         int sd = client_sockets[i];
         if (FD_ISSET(sd, temp_fds)) {
             // Clear the buffer
@@ -136,21 +150,46 @@ void handle_client_activity(fd_set *read_fds, fd_set *temp_fds) {
                 printf("Client disconnected\n");
                 close(sd);
                 FD_CLR(sd, read_fds);
+                printf("Deregistered client: %s\n", registered_clients[i].username);
+
+                // Remove the client from the registered clients list
+                for (int j = i; j < num_registered_clients - 1; ++j) {
+                    registered_clients[j] = registered_clients[j+1];
+                }
+
+                num_registered_clients--;
                 client_sockets[i] = 0;
             } else if (valread < 0) {
                 // Error reading from client
                 perror("recv");
             } else {
-                printf("Client: %s", buffer);
+                char recipient[USERNAME_MAX_LENGTH];
+                char message[BUFFER_SIZE - USERNAME_MAX_LENGTH - 1]; // Leave space for null terminator
+                
+                sscanf(buffer, "%s %[^\n]", recipient, message);
 
-                // Read input from Server's console
-                printf("Server: ");
-                fgets(buffer, BUFFER_SIZE, stdin);
+                // Find the recipient in the registered client's list
+                int recipient_socket = -1;
+                for (int j = 0; j < num_registered_clients; j++) {
+                    if (strcmp(registered_clients[j].username, recipient) == 0) {
+                        recipient_socket = registered_clients[j].socket;
+                        break;
+                    }
+                }
 
-                // Send response to client
-                send(sd, "Server: ", strlen("Server: "), 0);
-                send(sd, buffer, strlen(buffer), 0);
-                send(sd, "Client: ", strlen("Client: "), 0);
+                // If recipient found, send the message
+                if (recipient_socket != -1) {
+                    char composed_message[BUFFER_SIZE];
+                    sprintf(composed_message, "%s: %s\n", registered_clients[i].username, message);
+
+                    // Send the message to the recipient
+                    send(recipient_socket, composed_message, strlen(composed_message), 0);
+                } else {
+                    // Recipient not found, notify sender
+                    char not_found_msg[] = "Recipient not found\n";
+                    send(sd, not_found_msg, strlen(not_found_msg), 0);
+                }
+                
             }
         }
     }
